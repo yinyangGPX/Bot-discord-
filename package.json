@@ -1,0 +1,19 @@
+{
+  "name": "discord-welcome-bot",
+  "version": "1.0.0",
+  "description": "Bot de bienvenida para Discord con fondo personalizado",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": "22.x"
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "^0.1.72",
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.5",
+    "mongodb": "^6.8.0"
+  }
+}
