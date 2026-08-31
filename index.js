@@ -975,13 +975,6 @@ client.on('interactionCreate', async interaction => {
 
   // ── /key ───────────────────────────────────────────────────────────────────
   if (interaction.commandName === 'key') {
-    const memberRole = interaction.guild.roles.cache.find(
-      role => role.name.toLowerCase() === MEMBER_ROLE_NAME
-    );
-    if (!memberRole || !interaction.member.roles.cache.has(memberRole.id)) {
-      return interaction.reply({ content: '❌ Este comando solo está disponible para los miembros.', ephemeral: true });
-    }
-
     const mensaje = interaction.options.getString('mensaje');
     const imagen = interaction.options.getAttachment('imagen');
 
@@ -993,12 +986,10 @@ client.on('interactionCreate', async interaction => {
       }
 
       const ownerUser = ownerMember.user;
-      const purchaseNumber = interaction.user.username;
       const content = [
         '🔑 **Nueva solicitud de verificación de /key**',
         '',
         `👤 **Usuario:** ${interaction.user}`,
-        `🧾 **Número de compra:** ${purchaseNumber}`,
         `🆔 **ID:** ${interaction.user.id}`,
         '',
         '💬 **Mensaje:**',
