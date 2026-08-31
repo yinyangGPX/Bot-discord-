@@ -50,10 +50,20 @@ async function loadFonts() {
 const TOKEN              = process.env.TOKEN;
 const CLIENT_ID          = process.env.CLIENT_ID;
 const WELCOME_CHANNEL_ID = process.env.WELCOME_CHANNEL_ID;
+const OWNER_USERNAME     = 'Nickk.am';
+const MEMBER_ROLE_NAME   = 'miembro';
 
 if (!TOKEN)              { console.error('Falta TOKEN.');              process.exit(1); }
 if (!CLIENT_ID)          { console.error('Falta CLIENT_ID.');          process.exit(1); }
 if (!WELCOME_CHANNEL_ID) { console.error('Falta WELCOME_CHANNEL_ID.'); process.exit(1); }
+
+function isOwner(interaction) {
+  return interaction.guild?.ownerId === interaction.user?.id;
+}
+
+function isAdminOrOwner(interaction) {
+  return isOwner(interaction) || interaction.member?.permissions?.has(PermissionFlagsBits.Administrator);
+}
 
 // ── Guard anti-duplicados ───────────────────────────────────────────────────
 // Si por cualquier motivo (dos procesos vivos, reconexión del gateway, etc.)
@@ -173,7 +183,6 @@ function getMemberTag(member) {
 }
 
 // ── Rol automático de miembros ───────────────────────────────────────────────
-const MEMBER_ROLE_NAME  = 'miembro';
 const MEMBER_ROLE_COLOR = 0x808080; // gris #808080
 
 async function assignMemberRole(member) {
@@ -868,6 +877,7 @@ function parseInterval(str) {
 const reminderCommand = new SlashCommandBuilder()
   .setName('recordatorio')
   .setDescription('Crea un recordatorio periódico')
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
   .addStringOption(opt => opt.setName('intervalo').setDescription('Cada cuánto enviar (ej: 30m, 2h, 1d)').setRequired(true))
   .addChannelOption(opt => opt.setName('canal').setDescription('Canal donde se enviará el mensaje').setRequired(true))
   .addStringOption(opt => opt.setName('mensaje').setDescription('Mensaje del recordatorio').setRequired(true))
@@ -877,6 +887,7 @@ const reminderCommand = new SlashCommandBuilder()
 const deleteCommand = new SlashCommandBuilder()
   .setName('borrar-recordatorio')
   .setDescription('Elimina un recordatorio activo')
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
   .addStringOption(opt => opt.setName('id').setDescription('ID del recordatorio a borrar').setRequired(true));
 
 const listLinksCommand = new SlashCommandBuilder()
@@ -887,12 +898,41 @@ const listLinksCommand = new SlashCommandBuilder()
 const editLinksCommand = new SlashCommandBuilder()
   .setName('editar-links')
   .setDescription('Agrega o quita un dominio de la lista de links permitidos')
-  .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
   .addStringOption(opt =>
     opt.setName('accion').setDescription('Qué hacer con el dominio').setRequired(true)
       .addChoices({ name: 'Agregar', value: 'agregar' }, { name: 'Quitar', value: 'quitar' })
   )
   .addStringOption(opt => opt.setName('dominio').setDescription('Dominio a agregar o quitar (ej: youtube.com)').setRequired(true));
+
+const keyCommand = new SlashCommandBuilder()
+  .setName('key')
+  .setDescription('Solicita la verificación de una compra de key')
+  .addStringOption(opt =>
+    opt.setName('mensaje')
+      .setDescription('Mensaje que quieres enviar al Owner')
+      .setRequired(true)
+  )
+  .addAttachmentOption(opt =>
+    opt.setName('imagen')
+      .setDescription('Imagen de verificación de la compra')
+      .setRequired(true)
+  );
+
+const sendKeyCommand = new SlashCommandBuilder()
+  .setName('enviar')
+  .setDescription('Envía una key o mensaje privado a un usuario')
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+  .addUserOption(opt =>
+    opt.setName('usuario')
+      .setDescription('Usuario que recibirá el mensaje')
+      .setRequired(true)
+  )
+  .addStringOption(opt =>
+    opt.setName('mensaje')
+      .setDescription('Key o mensaje que recibirá el usuario')
+      .setRequired(true)
+  );
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  EVENTOS
@@ -909,6 +949,8 @@ client.once('ready', async () => {
         deleteCommand.toJSON(),
         listLinksCommand.toJSON(),
         editLinksCommand.toJSON(),
+        keyCommand.toJSON(),
+        sendKeyCommand.toJSON(),
       ]
     });
     console.log('✅ Comandos slash registrados');
@@ -923,6 +965,71 @@ client.once('ready', async () => {
 // ── Interacciones (slash commands) ──────────────────────────────────────────
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
+
+  // Los comandos administrativos quedan restringidos al Owner o a Administradores.
+  if (['recordatorio', 'borrar-recordatorio', 'links-permitidos', 'editar-links', 'enviar'].includes(interaction.commandName)) {
+    if (!isAdminOrOwner(interaction)) {
+      return interaction.reply({ content: '❌ No tienes permiso para usar este comando. Solo el Owner o los Administradores pueden usarlo.', ephemeral: true });
+    }
+  }
+
+  // ── /key ───────────────────────────────────────────────────────────────────
+  if (interaction.commandName === 'key') {
+    const memberRole = interaction.guild.roles.cache.find(
+      role => role.name.toLowerCase() === MEMBER_ROLE_NAME
+    );
+    if (!memberRole || !interaction.member.roles.cache.has(memberRole.id)) {
+      return interaction.reply({ content: '❌ Este comando solo está disponible para los miembros.', ephemeral: true });
+    }
+
+    const mensaje = interaction.options.getString('mensaje');
+    const imagen = interaction.options.getAttachment('imagen');
+
+    try {
+      const ownerMember = await interaction.guild.members.fetch(interaction.guild.ownerId).catch(() => null);
+
+      if (!ownerMember || ownerMember.user.username.toLowerCase() !== OWNER_USERNAME.toLowerCase()) {
+        return interaction.reply({ content: '❌ No pude encontrar al Owner `Nickk.am` en el servidor.', ephemeral: true });
+      }
+
+      const ownerUser = ownerMember.user;
+      const purchaseNumber = interaction.user.username;
+      const content = [
+        '🔑 **Nueva solicitud de verificación de /key**',
+        '',
+        `👤 **Usuario:** ${interaction.user}`,
+        `🧾 **Número de compra:** ${purchaseNumber}`,
+        `🆔 **ID:** ${interaction.user.id}`,
+        '',
+        '💬 **Mensaje:**',
+        mensaje
+      ].join('\n');
+
+      await ownerUser.send({
+        content,
+        files: [{ attachment: imagen.url, name: imagen.name || 'verificacion' }]
+      });
+
+      return interaction.reply({ content: '✅ Tu solicitud fue enviada al Owner para verificar la compra.', ephemeral: true });
+    } catch (err) {
+      console.error('Error enviando solicitud /key al Owner:', err);
+      return interaction.reply({ content: '❌ No pude enviar la solicitud al Owner. Verifica que tenga los mensajes privados habilitados.', ephemeral: true });
+    }
+  }
+
+  // ── /enviar ────────────────────────────────────────────────────────────────
+  if (interaction.commandName === 'enviar') {
+    const user = interaction.options.getUser('usuario');
+    const mensaje = interaction.options.getString('mensaje');
+
+    try {
+      await user.send({ content: mensaje });
+      return interaction.reply({ content: `✅ Mensaje enviado correctamente a **${user.username}**.`, ephemeral: true });
+    } catch (err) {
+      console.error(`Error enviando /enviar a ${user.tag}:`, err);
+      return interaction.reply({ content: `❌ No pude enviarle el mensaje a **${user.username}**. Puede tener los mensajes privados cerrados.`, ephemeral: true });
+    }
+  }
 
   // ── /recordatorio ──────────────────────────────────────────────────────────
   if (interaction.commandName === 'recordatorio') {
