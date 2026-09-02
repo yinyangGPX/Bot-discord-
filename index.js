@@ -52,6 +52,7 @@ const CLIENT_ID          = process.env.CLIENT_ID;
 const WELCOME_CHANNEL_ID = process.env.WELCOME_CHANNEL_ID;
 const OWNER_USERNAME     = 'Nickk.am';
 const MEMBER_ROLE_NAME   = 'miembro';
+const MOD_ROLE_NAME      = 'Mod';
 
 if (!TOKEN)              { console.error('Falta TOKEN.');              process.exit(1); }
 if (!CLIENT_ID)          { console.error('Falta CLIENT_ID.');          process.exit(1); }
@@ -63,6 +64,14 @@ function isOwner(interaction) {
 
 function isAdminOrOwner(interaction) {
   return isOwner(interaction) || interaction.member?.permissions?.has(PermissionFlagsBits.Administrator);
+}
+
+// Acepta tanto un GuildMember (message.member) como un objeto con .member
+// (interaction), para poder reusarla en ambos contextos sin duplicar lógica.
+function hasModRole(memberOrInteraction) {
+  const member = memberOrInteraction?.roles ? memberOrInteraction : memberOrInteraction?.member;
+  if (!member?.roles?.cache) return false;
+  return member.roles.cache.some(role => role.name === MOD_ROLE_NAME);
 }
 
 // ── Guard anti-duplicados ───────────────────────────────────────────────────
@@ -1130,6 +1139,7 @@ client.on('messageCreate', async message => {
     if (!message.guild)     return;
 
     const isAdmin = message.member?.permissions.has(PermissionFlagsBits.Administrator);
+    const isModRole = hasModRole(message.member);
 
     // Moderación: @everyone no autorizado (solo dueño/admins pueden usarlo)
     if (!isAdmin && message.content.includes('@everyone')) {
@@ -1138,12 +1148,14 @@ client.on('messageCreate', async message => {
     }
 
     if (!isAdmin) {
-      // Moderación: link no permitido
-      const allowedDomains = loadAllowedLinks();
-      const badLink        = findDisallowedLink(message.content, allowedDomains);
-      if (badLink) {
-        await applyModerationStrike(message, 'Do not send links, it is not allowed to send, do not send another one or else if you will not be permanently banned');
-        return;
+      // Moderación: link no permitido (admins y Mod están exentos)
+      if (!isModRole) {
+        const allowedDomains = loadAllowedLinks();
+        const badLink        = findDisallowedLink(message.content, allowedDomains);
+        if (badLink) {
+          await applyModerationStrike(message, 'Do not send links, it is not allowed to send, do not send another one or else if you will not be permanently banned');
+          return;
+        }
       }
       // Moderación: spam
       if (message.content.trim().length > 0) {
