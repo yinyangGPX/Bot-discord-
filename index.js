@@ -53,6 +53,7 @@ const WELCOME_CHANNEL_ID = process.env.WELCOME_CHANNEL_ID;
 const OWNER_USERNAME     = 'Nickk.am';
 const MEMBER_ROLE_NAME   = 'miembro';
 const MOD_ROLE_NAME      = 'Mod';
+const LINK_ROLE_NAMES    = ['Neo Hyper', 'Lumity', 'Mod']; // roles que pueden enviar enlaces
 
 if (!TOKEN)              { console.error('Falta TOKEN.');              process.exit(1); }
 if (!CLIENT_ID)          { console.error('Falta CLIENT_ID.');          process.exit(1); }
@@ -71,7 +72,7 @@ function isAdminOrOwner(interaction) {
 function hasModRole(memberOrInteraction) {
   const member = memberOrInteraction?.roles ? memberOrInteraction : memberOrInteraction?.member;
   if (!member?.roles?.cache) return false;
-  return member.roles.cache.some(role => role.name === MOD_ROLE_NAME);
+  return member.roles.cache.some(role => LINK_ROLE_NAMES.includes(role.name));
 }
 
 // ── Guard anti-duplicados ───────────────────────────────────────────────────
