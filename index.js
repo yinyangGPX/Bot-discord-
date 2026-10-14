@@ -7,7 +7,15 @@ const {
   REST,
   Routes,
   SlashCommandBuilder,
-  PermissionFlagsBits
+  PermissionFlagsBits,
+  EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
+  ChannelType
 } = require('discord.js');
 
 const {
@@ -915,6 +923,34 @@ const editLinksCommand = new SlashCommandBuilder()
   )
   .addStringOption(opt => opt.setName('dominio').setDescription('Dominio a agregar o quitar (ej: youtube.com)').setRequired(true));
 
+const pollCommand = new SlashCommandBuilder()
+  .setName('encuesta')
+  .setDescription('Publica una encuesta interactiva')
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+  .addChannelOption(opt => opt.setName('canal').setDescription('Canal donde publicar la encuesta').addChannelTypes(ChannelType.GuildText).setRequired(true))
+  .addStringOption(opt => opt.setName('pregunta').setDescription('Pregunta de la encuesta').setMaxLength(250).setRequired(true))
+  .addStringOption(opt => opt.setName('opciones').setDescription('Opciones separadas por | (mínimo 2, máximo 5)').setMaxLength(900).setRequired(true))
+  .addStringOption(opt => opt.setName('duracion').setDescription('Duración, por ejemplo 30m, 2h o 1d').setRequired(true));
+
+const giveawayCommand = new SlashCommandBuilder()
+  .setName('sorteo')
+  .setDescription('Crea un sorteo con participación mediante botón')
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+  .addChannelOption(opt => opt.setName('canal').setDescription('Canal donde publicar el sorteo').addChannelTypes(ChannelType.GuildText).setRequired(true))
+  .addStringOption(opt => opt.setName('premio').setDescription('Premio del sorteo').setMaxLength(200).setRequired(true))
+  .addStringOption(opt => opt.setName('descripcion').setDescription('Explica de qué trata el sorteo').setMaxLength(1800).setRequired(true))
+  .addStringOption(opt => opt.setName('duracion').setDescription('Duración, por ejemplo 30m, 2h o 1d').setRequired(true));
+
+const responsesCommand = new SlashCommandBuilder()
+  .setName('respuestas')
+  .setDescription('Publica un buzón para sugerencias, dudas o propuestas')
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+  .addChannelOption(opt => opt.setName('canal').setDescription('Canal donde publicar el buzón').addChannelTypes(ChannelType.GuildText).setRequired(true))
+  .addChannelOption(opt => opt.setName('canal_revision').setDescription('Canal privado donde llegarán las respuestas').addChannelTypes(ChannelType.GuildText).setRequired(true))
+  .addStringOption(opt => opt.setName('titulo').setDescription('Título del mensaje').setMaxLength(200).setRequired(true))
+  .addStringOption(opt => opt.setName('mensaje').setDescription('Explica qué pueden enviar los miembros').setMaxLength(1800).setRequired(true))
+  .addStringOption(opt => opt.setName('texto_boton').setDescription('Texto del botón').setMaxLength(80).setRequired(false));
+
 const keyCommand = new SlashCommandBuilder()
   .setName('key')
   .setDescription('Solicita la verificación de una compra de key')
@@ -948,6 +984,145 @@ const sendKeyCommand = new SlashCommandBuilder()
 //  EVENTOS
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// ── Encuestas, sorteos y buzón de respuestas ──────────────────────────────────
+const POLLS_FILE = path.join(__dirname, 'polls.json');
+const GIVEAWAYS_FILE = path.join(__dirname, 'giveaways.json');
+const RESPONSE_CONFIGS_FILE = path.join(__dirname, 'response-configs.json');
+const communityTimers = new Map();
+function loadCommunityData(file, fallback) {
+  try { return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : fallback; }
+  catch (err) { console.error(`No se pudo leer ${path.basename(file)}:`, err); return fallback; }
+}
+function saveCommunityData(file, data) { fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8'); }
+function buildPollPayload(poll) {
+  const counts = poll.options.map((_, i) => Object.values(poll.votes || {}).filter(v => v === i).length);
+  const total = counts.reduce((a, b) => a + b, 0);
+  const embed = new EmbedBuilder().setColor(poll.closed ? 0x808080 : 0x5865f2).setTitle(`📊 ${poll.question}`)
+    .setDescription(poll.options.map((option, i) => `**${i + 1}. ${option}**\n${poll.closed ? `Votos: **${counts[i]}**` : `Votos: **${counts[i]}**`}`).join('\n\n'))
+    .addFields({ name: 'Participación', value: `${total} voto(s)`, inline: true }, { name: 'Estado', value: poll.closed ? 'Encuesta finalizada' : `Cierra <t:${Math.floor(poll.endsAt / 1000)}:R>`, inline: true })
+    .setFooter({ text: 'Yin Yang | Script Hub • Un voto por persona' });
+  const rows = [];
+  if (!poll.closed) {
+    for (let start = 0; start < poll.options.length; start += 5) {
+      rows.push(new ActionRowBuilder().addComponents(poll.options.slice(start, start + 5).map((option, offset) => new ButtonBuilder().setCustomId(`poll_vote:${poll.id}:${start + offset}`).setLabel(`${start + offset + 1}. ${option}`.slice(0, 80)).setStyle(ButtonStyle.Secondary))));
+    }
+  }
+  return { embeds: [embed], components: rows };
+}
+function buildGiveawayPayload(giveaway) {
+  const embed = new EmbedBuilder().setColor(0xfacc15).setTitle(`🎉 SORTEO: ${giveaway.prize}`).setDescription(`${giveaway.description}\n\nPulsa el botón **Participar** para entrar al sorteo.`)
+    .addFields({ name: 'Participantes', value: `**${giveaway.participants.length}**`, inline: true }, { name: 'Finaliza', value: `<t:${Math.floor(giveaway.endsAt / 1000)}:R>`, inline: true })
+    .setFooter({ text: 'Yin Yang | Script Hub • ¡Mucha suerte!' }).setTimestamp(new Date(giveaway.endsAt));
+  return { embeds: [embed], components: giveaway.closed ? [] : [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`giveaway_join:${giveaway.id}`).setLabel('🎉 Participar').setStyle(ButtonStyle.Success))] };
+}
+async function createWinnerImage(guild, winner, prize) {
+  const W = 900, H = 280; const canvas = createCanvas(W, H); const ctx = canvas.getContext('2d');
+  const bg = ctx.createLinearGradient(0, 0, W, H); bg.addColorStop(0, '#211900'); bg.addColorStop(0.55, '#3b2b00'); bg.addColorStop(1, '#120e00');
+  ctx.fillStyle = bg; roundRect(ctx, 0, 0, W, H, 24); ctx.fill();
+  ctx.save(); ctx.shadowColor = '#facc15'; ctx.shadowBlur = 22; ctx.lineWidth = 3; ctx.strokeStyle = '#facc15'; roundRect(ctx, 3, 3, W - 6, H - 6, 22); ctx.stroke(); ctx.restore();
+  const avatarSize = 150, avatarX = 105, avatarY = H / 2;
+  try {
+    const response = await fetch(winner.displayAvatarURL({ extension: 'png', size: 256 }));
+    if (!response.ok) throw new Error(`Avatar HTTP ${response.status}`);
+    const avatar = await loadImage(Buffer.from(await response.arrayBuffer()));
+    ctx.save(); ctx.beginPath(); ctx.arc(avatarX, avatarY, avatarSize / 2, 0, Math.PI * 2); ctx.clip(); ctx.drawImage(avatar, avatarX - avatarSize / 2, avatarY - avatarSize / 2, avatarSize, avatarSize); ctx.restore();
+  } catch (err) { console.error('No se pudo cargar avatar del ganador:', err); ctx.fillStyle = '#facc15'; ctx.beginPath(); ctx.arc(avatarX, avatarY, avatarSize / 2, 0, Math.PI * 2); ctx.fill(); }
+  ctx.strokeStyle = '#facc15'; ctx.lineWidth = 5; ctx.beginPath(); ctx.arc(avatarX, avatarY, avatarSize / 2 + 5, 0, Math.PI * 2); ctx.stroke();
+  const x = 220; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#facc15'; ctx.font = 'bold 28px Inter'; ctx.fillText('🎉 TENEMOS UN GANADOR', x, 65);
+  ctx.fillStyle = '#ffffff'; ctx.font = 'bold 43px Inter'; let name = winner.username; while (ctx.measureText(name).width > W - x - 35 && name.length > 5) name = name.slice(0, -2) + '…'; ctx.fillText(name, x, 125);
+  ctx.fillStyle = '#fde68a'; ctx.font = 'bold 25px Inter'; let prizeText = `Premio: ${prize}`; while (ctx.measureText(prizeText).width > W - x - 35 && prizeText.length > 10) prizeText = prizeText.slice(0, -4) + '…'; ctx.fillText(prizeText, x, 185);
+  ctx.fillStyle = '#d6d3d1'; ctx.font = '20px Inter'; ctx.fillText(guild.name, x, 230);
+  return canvas.toBuffer('image/png');
+}
+function schedulePoll(poll) {
+  const old = communityTimers.get(`poll:${poll.id}`); if (old) clearTimeout(old);
+  if (poll.closed) return;
+  const timer = setTimeout(() => closePoll(poll.id).catch(err => console.error('Error cerrando encuesta:', err)), Math.max(0, poll.endsAt - Date.now()));
+  communityTimers.set(`poll:${poll.id}`, timer);
+}
+function scheduleGiveaway(giveaway) {
+  const old = communityTimers.get(`giveaway:${giveaway.id}`); if (old) clearTimeout(old);
+  if (giveaway.closed) return;
+  const timer = setTimeout(() => closeGiveaway(giveaway.id).catch(err => console.error('Error cerrando sorteo:', err)), Math.max(0, giveaway.endsAt - Date.now()));
+  communityTimers.set(`giveaway:${giveaway.id}`, timer);
+}
+async function closePoll(id) {
+  const polls = loadCommunityData(POLLS_FILE, {}), poll = polls[id]; if (!poll || poll.closed) return;
+  poll.closed = true; saveCommunityData(POLLS_FILE, polls); communityTimers.delete(`poll:${id}`);
+  try { const channel = await client.channels.fetch(poll.channelId); const msg = await channel.messages.fetch(poll.messageId); await msg.edit(buildPollPayload(poll)); }
+  catch (err) { console.error(`No se pudo actualizar encuesta ${id}:`, err); }
+}
+async function closeGiveaway(id) {
+  const giveaways = loadCommunityData(GIVEAWAYS_FILE, {}), giveaway = giveaways[id]; if (!giveaway || giveaway.closed) return;
+  giveaway.closed = true; saveCommunityData(GIVEAWAYS_FILE, giveaways); communityTimers.delete(`giveaway:${id}`);
+  let channel;
+  try { channel = await client.channels.fetch(giveaway.channelId); const msg = await channel.messages.fetch(giveaway.messageId); await msg.edit(buildGiveawayPayload(giveaway)); }
+  catch (err) { console.error(`No se pudo cerrar mensaje del sorteo ${id}:`, err); }
+  if (!channel?.isTextBased()) return;
+  const unique = [...new Set(giveaway.participants)];
+  if (!unique.length) return channel.send({ embeds: [new EmbedBuilder().setColor(0xfacc15).setTitle('🎉 Sorteo finalizado').setDescription(`Premio: **${giveaway.prize}**\nNo hubo participantes, así que no se pudo elegir un ganador.`)] });
+  const winnerId = unique[crypto.randomInt(unique.length)];
+  try {
+    const winner = await client.users.fetch(winnerId);
+    const guild = await client.guilds.fetch(giveaway.guildId);
+    const image = await createWinnerImage(guild, winner, giveaway.prize);
+    await channel.send({ content: `🏆 ¡Felicidades <@${winnerId}>! Ganaste **${giveaway.prize}**.`, files: [new AttachmentBuilder(image, { name: 'ganador-sorteo.png' })] });
+  } catch (err) { console.error(`Error anunciando ganador del sorteo ${id}:`, err); await channel.send(`🏆 Ganador del sorteo **${giveaway.prize}**: <@${winnerId}>`).catch(() => {}); }
+}
+async function handleCommunityButton(interaction) {
+  const [action, id, extra] = interaction.customId.split(':');
+  try {
+    if (action === 'poll_vote') {
+      const polls = loadCommunityData(POLLS_FILE, {}), poll = polls[id];
+      if (!poll || poll.closed || Date.now() >= poll.endsAt) return interaction.reply({ content: 'Esta encuesta ya terminó.', ephemeral: true });
+      const optionIndex = Number(extra); if (!Number.isInteger(optionIndex) || optionIndex < 0 || optionIndex >= poll.options.length) return interaction.reply({ content: 'Esa opción ya no está disponible.', ephemeral: true });
+      const previous = poll.votes[interaction.user.id]; poll.votes[interaction.user.id] = optionIndex; saveCommunityData(POLLS_FILE, polls);
+      await interaction.update(buildPollPayload(poll));
+      if (previous === undefined) return;
+      // La actualización ya se guardó; no enviar un segundo mensaje para no exponer el voto.
+      return;
+    }
+    if (action === 'giveaway_join') {
+      const giveaways = loadCommunityData(GIVEAWAYS_FILE, {}), giveaway = giveaways[id];
+      if (!giveaway || giveaway.closed || Date.now() >= giveaway.endsAt) return interaction.reply({ content: 'Este sorteo ya terminó.', ephemeral: true });
+      const index = giveaway.participants.indexOf(interaction.user.id);
+      if (index >= 0) giveaway.participants.splice(index, 1); else giveaway.participants.push(interaction.user.id);
+      saveCommunityData(GIVEAWAYS_FILE, giveaways);
+      return interaction.update(buildGiveawayPayload(giveaway)).then(async () => interaction.followUp({ content: index >= 0 ? 'Has retirado tu participación.' : '¡Ya estás participando! Pulsa de nuevo si quieres retirarte.', ephemeral: true }));
+    }
+    if (action === 'response_open') {
+      const configs = loadCommunityData(RESPONSE_CONFIGS_FILE, {}), config = configs[id];
+      if (!config) return interaction.reply({ content: 'Este buzón ya no está configurado. Pide a un administrador que lo publique de nuevo.', ephemeral: true });
+      const modal = new ModalBuilder().setCustomId(`response_submit:${id}`).setTitle(config.title.slice(0, 45));
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('subject').setLabel('Asunto (opcional)').setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(100).setPlaceholder('Ej.: Sugerencia para un script')),
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('response').setLabel('Tu mensaje').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1800).setPlaceholder('Escribe aquí tu sugerencia, duda o explicación'))
+      );
+      return interaction.showModal(modal);
+    }
+  } catch (err) { console.error('Error procesando botón de comunidad:', err); if (!interaction.replied && !interaction.deferred) await interaction.reply({ content: '❌ Ocurrió un error. Inténtalo de nuevo más tarde.', ephemeral: true }).catch(() => {}); }
+}
+async function handleCommunityModal(interaction) {
+  if (!interaction.customId.startsWith('response_submit:')) return;
+  const messageId = interaction.customId.split(':')[1];
+  const configs = loadCommunityData(RESPONSE_CONFIGS_FILE, {}), config = configs[messageId];
+  if (!config) return interaction.reply({ content: 'Este buzón ya no está disponible.', ephemeral: true });
+  await interaction.deferReply({ ephemeral: true });
+  try {
+    const reviewChannel = await client.channels.fetch(config.reviewChannelId);
+    if (!reviewChannel?.isTextBased()) return interaction.editReply('❌ El canal privado de revisión no está disponible. Avísale a un administrador.');
+    const subject = interaction.fields.getTextInputValue('subject').trim() || 'Sin asunto';
+    const response = interaction.fields.getTextInputValue('response').trim();
+    const embed = new EmbedBuilder().setColor(0x60a5fa).setTitle(`📩 Nueva respuesta: ${config.title}`).setDescription(response).addFields(
+      { name: 'Autor', value: `${interaction.user.tag} (${interaction.user.id})`, inline: false },
+      { name: 'Asunto', value: subject, inline: false },
+      { name: 'Canal de origen', value: `<#${config.channelId}>`, inline: true }
+    ).setTimestamp();
+    await reviewChannel.send({ embeds: [embed] });
+    return interaction.editReply('✅ Tu mensaje fue enviado al equipo. ¡Gracias por ayudar a la comunidad!');
+  } catch (err) { console.error('Error enviando respuesta del buzón:', err); return interaction.editReply('❌ No pude entregar tu respuesta. Inténtalo más tarde o avisa a un administrador.'); }
+}
+
 client.once('ready', async () => {
   console.log(`✅ Bot listo como ${client.user.tag} — [${INSTANCE_ID}] PID ${process.pid}, ws.status=${client.ws.status}, ping=${client.ws.ping}ms`);
 
@@ -961,6 +1136,9 @@ client.once('ready', async () => {
         editLinksCommand.toJSON(),
         keyCommand.toJSON(),
         sendKeyCommand.toJSON(),
+        pollCommand.toJSON(),
+        giveawayCommand.toJSON(),
+        responsesCommand.toJSON(),
       ]
     });
     console.log('✅ Comandos slash registrados');
@@ -970,17 +1148,84 @@ client.once('ready', async () => {
 
   const reminders = loadReminders();
   for (const r of reminders) startReminder(r);
+  for (const poll of Object.values(loadCommunityData(POLLS_FILE, {}))) schedulePoll(poll);
+  for (const giveaway of Object.values(loadCommunityData(GIVEAWAYS_FILE, {}))) scheduleGiveaway(giveaway);
 });
 
 // ── Interacciones (slash commands) ──────────────────────────────────────────
 client.on('interactionCreate', async interaction => {
+  if (interaction.isButton()) {
+    await handleCommunityButton(interaction);
+    return;
+  }
+  if (interaction.isModalSubmit()) {
+    await handleCommunityModal(interaction);
+    return;
+  }
   if (!interaction.isChatInputCommand()) return;
 
   // Los comandos administrativos quedan restringidos al Owner o a Administradores.
-  if (['recordatorio', 'borrar-recordatorio', 'links-permitidos', 'editar-links', 'enviar'].includes(interaction.commandName)) {
+  if (['recordatorio', 'borrar-recordatorio', 'links-permitidos', 'editar-links', 'enviar', 'encuesta', 'sorteo', 'respuestas'].includes(interaction.commandName)) {
     if (!isAdminOrOwner(interaction)) {
       return interaction.reply({ content: '❌ No tienes permiso para usar este comando. Solo el Owner o los Administradores pueden usarlo.', ephemeral: true });
     }
+  }
+
+  if (interaction.commandName === 'encuesta') {
+    const channel = interaction.options.getChannel('canal');
+    const question = interaction.options.getString('pregunta').trim();
+    const options = interaction.options.getString('opciones').split('|').map(v => v.trim()).filter(Boolean);
+    const durationText = interaction.options.getString('duracion');
+    const durationMs = parseInterval(durationText);
+    if (options.length < 2 || options.length > 5) return interaction.reply({ content: '❌ Debes indicar entre 2 y 5 opciones separadas por `|`.', ephemeral: true });
+    if (new Set(options.map(v => v.toLowerCase())).size !== options.length) return interaction.reply({ content: '❌ Las opciones no pueden repetirse.', ephemeral: true });
+    if (!durationMs || durationMs < 60000 || durationMs > 30 * 86400000) return interaction.reply({ content: '❌ Duración inválida. Usa `1m` o más, hasta `30d`.', ephemeral: true });
+    try {
+      const polls = loadCommunityData(POLLS_FILE, {});
+      const id = crypto.randomUUID();
+      const poll = { id, guildId: interaction.guildId, channelId: channel.id, question, options, votes: {}, endsAt: Date.now() + durationMs, createdBy: interaction.user.id, closed: false };
+      const msg = await channel.send(buildPollPayload(poll));
+      poll.messageId = msg.id; polls[id] = poll; saveCommunityData(POLLS_FILE, polls); schedulePoll(poll);
+      return interaction.reply({ content: `✅ Encuesta publicada en ${channel}. Termina <t:${Math.floor(poll.endsAt / 1000)}:R>.`, ephemeral: true });
+    } catch (err) { console.error('Error creando encuesta:', err); return interaction.reply({ content: '❌ No pude publicar la encuesta. Revisa los permisos del bot en ese canal.', ephemeral: true }); }
+  }
+
+  if (interaction.commandName === 'sorteo') {
+    const channel = interaction.options.getChannel('canal');
+    const prize = interaction.options.getString('premio').trim();
+    const description = interaction.options.getString('descripcion').trim();
+    const durationText = interaction.options.getString('duracion');
+    const durationMs = parseInterval(durationText);
+    if (!durationMs || durationMs < 60000 || durationMs > 30 * 86400000) return interaction.reply({ content: '❌ Duración inválida. Usa `1m` o más, hasta `30d`.', ephemeral: true });
+    try {
+      const giveaways = loadCommunityData(GIVEAWAYS_FILE, {});
+      const id = crypto.randomUUID();
+      const giveaway = { id, guildId: interaction.guildId, channelId: channel.id, prize, description, participants: [], endsAt: Date.now() + durationMs, createdBy: interaction.user.id, closed: false };
+      const msg = await channel.send(buildGiveawayPayload(giveaway));
+      giveaway.messageId = msg.id; giveaways[id] = giveaway; saveCommunityData(GIVEAWAYS_FILE, giveaways); scheduleGiveaway(giveaway);
+      return interaction.reply({ content: `✅ Sorteo publicado en ${channel}. Finaliza <t:${Math.floor(giveaway.endsAt / 1000)}:R>.`, ephemeral: true });
+    } catch (err) { console.error('Error creando sorteo:', err); return interaction.reply({ content: '❌ No pude publicar el sorteo. Revisa los permisos del bot en ese canal.', ephemeral: true }); }
+  }
+
+  if (interaction.commandName === 'respuestas') {
+    const channel = interaction.options.getChannel('canal');
+    const reviewChannel = interaction.options.getChannel('canal_revision');
+    const title = interaction.options.getString('titulo').trim();
+    const message = interaction.options.getString('mensaje').trim();
+    const buttonText = interaction.options.getString('texto_boton')?.trim() || '✍️ Enviar respuesta';
+    if (channel.id === reviewChannel.id) return interaction.reply({ content: '❌ El canal de revisión debe ser distinto al canal público del buzón.', ephemeral: true });
+    const everyoneCanView = reviewChannel.permissionsFor(interaction.guild.roles.everyone)?.has(PermissionFlagsBits.ViewChannel);
+    if (everyoneCanView) return interaction.reply({ content: '❌ El canal de revisión debe ser privado: quita el permiso **Ver canal** al rol @everyone y deja acceso solo al equipo.', ephemeral: true });
+    try {
+      const configs = loadCommunityData(RESPONSE_CONFIGS_FILE, {});
+      const embed = new EmbedBuilder().setColor(0x60a5fa).setTitle(title).setDescription(message).setFooter({ text: 'Yin Yang | Script Hub • Tu opinión nos ayuda a mejorar' }).setTimestamp();
+      const msg = await channel.send({ embeds: [embed], components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('response_open:pending').setLabel(buttonText).setStyle(ButtonStyle.Primary))] });
+      configs[msg.id] = { guildId: interaction.guildId, channelId: channel.id, reviewChannelId: reviewChannel.id, title, buttonText };
+      saveCommunityData(RESPONSE_CONFIGS_FILE, configs);
+      // Reemplazar el ID temporal por el ID del mensaje, para asociar cada buzón con su configuración.
+      await msg.edit({ components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`response_open:${msg.id}`).setLabel(buttonText).setStyle(ButtonStyle.Primary))] });
+      return interaction.reply({ content: `✅ Buzón publicado en ${channel}. Las respuestas llegarán a ${reviewChannel}.`, ephemeral: true });
+    } catch (err) { console.error('Error creando buzón:', err); return interaction.reply({ content: '❌ No pude publicar el buzón. Revisa los permisos del bot en ambos canales.', ephemeral: true }); }
   }
 
   // ── /key ───────────────────────────────────────────────────────────────────
