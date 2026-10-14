@@ -1013,7 +1013,7 @@ function buildGiveawayPayload(giveaway) {
   const embed = new EmbedBuilder().setColor(0xfacc15).setTitle(`🎉 SORTEO: ${giveaway.prize}`).setDescription(`${giveaway.description}\n\nPulsa el botón **Participar** para entrar al sorteo.`)
     .addFields({ name: 'Participantes', value: `**${giveaway.participants.length}**`, inline: true }, { name: 'Finaliza', value: `<t:${Math.floor(giveaway.endsAt / 1000)}:R>`, inline: true })
     .setFooter({ text: 'Yin Yang | Script Hub • ¡Mucha suerte!' }).setTimestamp(new Date(giveaway.endsAt));
-  return { embeds: [embed], components: giveaway.closed ? [] : [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`giveaway_join:${giveaway.id}`).setLabel('🎉 Participar').setStyle(ButtonStyle.Success))] };
+  return { embeds: [embed], components: giveaway.closed ? [] : [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`giveaway_join:${giveaway.id}`).setLabel('🎉 Participar  →').setStyle(ButtonStyle.Success))] };
 }
 async function createWinnerImage(guild, winner, prize) {
   const W = 900, H = 280; const canvas = createCanvas(W, H); const ctx = canvas.getContext('2d');
